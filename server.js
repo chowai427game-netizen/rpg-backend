@@ -4,67 +4,89 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // 讓伺服器看得懂前端傳過來的 JSON 數據
+app.use(express.json());
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 5000;
 
-// 連接 MongoDB 雲端資料庫
 if (MONGODB_URI) {
     mongoose.connect(MONGODB_URI)
-        .then(() => console.log("📡 成功與 MongoDB 雲端大腦同步！"))
+        .then(() => console.log("📡 MongoDB 雲端大腦已完全同步！"))
         .catch(err => console.error("❌ 資料庫連線失敗:", err));
 }
 
-// 1. ⚙️ 定義資料庫裏面「勇者血脈紀錄」嘅格式 (Schema)
+// 1. 勇者血脈種子格式
 const LegacySchema = new mongoose.Schema({
-    name: { type: String, required: true, unique: true }, // 勇者名（每個人唯一）
-    lastFloor: { type: Number, default: 0 },              // 前代最高抵達層數
-    legacyGold: { type: Number, default: 0 },             // 留給後代的繼承金幣
-    legacyAtk: { type: Number, default: 0 },              // 留給後代的血脈攻擊
-    legacyHp: { type: Number, default: 0 },               // 留給後代的血脈血量
-    updatedAt: { type: Date, default: Date.now }          // 最後戰死存檔時間
+    name: { type: String, required: true, unique: true },
+    lastFloor: { type: Number, default: 0 },
+    legacyGold: { type: Number, default: 0 },
+    legacyAtk: { type: Number, default: 0 },
+    legacyHp: { type: Number, default: 0 },
+    updatedAt: { type: Date, default: Date.now }
 });
-
 const Legacy = mongoose.model('Legacy', LegacySchema);
 
-// 基礎測試接口
+// 2. 【全新】全服共享全球墓碑格式
+const TombstoneSchema = new mongoose.Schema({
+    name: String,
+    floor: Number,
+    lv: Number,
+    cause: String,
+    lastWords: String, // 遺言系統
+    date: { type: Date, default: Date.now }
+});
+const Tombstone = mongoose.model('Tombstone', TombstoneSchema);
+
 app.get('/', (req, res) => {
-    res.send("⚔️ 命運深淵雲端伺服器正在完美運行中！");
+    res.send("⚔️ 命運深淵伺服器完美運作中！");
 });
 
-// 2. 📥 【接口 A】線上存檔：當勇者不幸戰死時，前端將傳承數據發送過來儲存
+// 📥 【核心 API 升級】線上存檔 + 自動同步建立全服墓碑
 app.post('/api/save', async (req, res) => {
-    const { name, lastFloor, legacyGold, legacyAtk, legacyHp } = req.body;
+    const { name, lastFloor, legacyGold, legacyAtk, legacyHp, cause, lastWords } = req.body;
     try {
-        // 如果這個名字已經有紀錄就更新(Update)，如果沒有就新建一個紀錄(Create)
+        // (A) 更新或建立玩家嘅繼承血脈
         const updatedLegacy = await Legacy.findOneAndUpdate(
             { name: name },
             { lastFloor, legacyGold, legacyAtk, legacyHp, updatedAt: Date.now() },
-            { new: true, upsert: true } // upsert = 不存在就直接新增
+            { new: true, upsert: true }
         );
-        res.json({ success: true, message: "✨ 雲端血脈傳承成功！", data: updatedLegacy });
+
+        // (B) 自動在全球墓碑庫塞入一塊新石碑 (帶埋臨終遺言)
+        const newTomb = new Tombstone({
+            name,
+            floor: lastFloor,
+            lv: req.body.lv || 1,
+            cause: cause || "未知魔物",
+            lastWords: lastWords || "（這個勇者走得很安詳，沒有留下一句話...）"
+        });
+        await newTomb.save();
+
+        res.json({ success: true, message: "✨ 雲端血脈與石碑立妥！", data: updatedLegacy });
     } catch (error) {
         res.status(500).json({ success: false, message: "❌ 雲端存檔失敗", error: error.message });
     }
 });
 
-// 3. 📤 【接口 B】線上讀檔：當玩家在首頁輸入名，點擊開啟冒險時，去雲端抓取祖輩遺產
+// 📤 讀取血脈
 app.get('/api/load/:name', async (req, res) => {
     try {
         const legacyData = await Legacy.findOne({ name: req.params.name });
-        if (legacyData) {
-            // 找到了！回傳祖輩遺留下來的庇佑數據
-            res.json({ success: true, found: true, data: legacyData });
-        } else {
-            // 沒找到，代表是該家族的第一代始祖
-            res.json({ success: true, found: false, message: "🍂 新生的第一代勇者，查無祖輩遺產" });
-        }
+        if (legacyData) res.json({ success: true, found: true, data: legacyData });
+        else res.json({ success: true, found: false });
+    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+});
+
+// 📤 【全新 API】抓取全伺服器全球最新嘅 5 塊玩家墓碑
+app.get('/api/global-tombstones', async (req, res) => {
+    try {
+        const list = await Tombstone.find().sort({ date: -1 }).limit(5);
+        res.json({ success: true, data: list });
     } catch (error) {
-        res.status(500).json({ success: false, message: "❌ 雲端讀檔失敗", error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`🚀 伺服器已在 Port ${PORT} 拔劍啟航！`);
+    console.log(`🚀 伺服器已在 Port ${PORT} 啟航！`);
 });
