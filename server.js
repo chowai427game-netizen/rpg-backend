@@ -1,6 +1,3 @@
-已配合現時遊戲機制（**地下城戰死後僅返回村莊、等級與裝備完好保留、不再刪除雲端角色檔**）並徹底解決 CORS 跨網域封鎖問題，重寫後的 `server.js` 完整代碼如下：
-
-```javascript
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -151,21 +148,3 @@ app.get('/api/global-tombstones', async (req, res) => {
 
 // 📡 開啟中央監聽閘門
 app.listen(PORT, () => console.log(`🚀 命運深淵伺服器已在 Port ${PORT} 部署就緒！`));
-
-```
-
----
-
-### 關鍵改動與架構說明
-
-1. **徹底移除 `ActiveProgress.deleteOne` 強制抹除邏輯**：
-舊版代碼在接收到 `/api/save` 死亡請求時會執行刪除 active 存檔的操作，導致玩家進度被粉碎。重寫後完全移除此操作，無論是正常存檔還是戰敗記錄，`ActiveProgress` 均會完好保留，符合現時遊戲「死了只回到城、人物 Lv 與裝備保留、僅清空臨時素材與未結算 EXP」的規則。
-2. **完整 Cors 標頭允許**：
-顯式加入 `methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']` 及 `allowedHeaders`，確保瀏覽器從 GitHub Pages（例如 `[https://chowai427game-netizen.github.io](https://chowai427game-netizen.github.io)`）發送預檢請求（Preflight Request / OPTIONS）時不會引發 CORS 拒絕錯誤。
-3. **路由與資料欄位雙向相容**：
-* 前端 `state.js` 傳送的 JSON 結構為 `{ name, activeChar }`，而舊版為 `{ name, player }`。新代碼寫為 `req.body.activeChar || req.body.player || req.body.playerObj`，確保新舊版本的前端存檔請求均能無縫解析。
-* 同時掛載 `/api/active/save` 與 `/api/save` 路由，防止舊有路徑呼叫回傳 404 錯誤。
-
-
-4. **根目錄 Ping 接口支援**：
-`GET /` 端點提供輕量級回應，配合前端 `state.js` 在頁面載入時喚醒免費 Render 伺服器的冷啟動過程。
