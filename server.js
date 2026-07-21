@@ -5,8 +5,7 @@ const cors = require('cors');
 const app = express();
 
 // ==========================================
-// 🌐 跨來源資源共享 (CORS) 徹底配置
-// 解決 GitHub Pages 呼叫 Render 後端時被瀏覽器同源政策封鎖的問題
+// 🌐 CORS 跨網域配置
 // ==========================================
 app.use(cors({
     origin: '*',
@@ -19,7 +18,7 @@ app.use(express.json({ limit: '2mb' }));
 const MONGODB_URI = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 5000;
 
-// 📡 資料庫連線初始化
+// 📡 資料庫連線
 if (MONGODB_URI) {
     mongoose.connect(MONGODB_URI)
         .then(() => console.log("📡 MongoDB 雲端大腦已完全同步！"))
@@ -29,18 +28,16 @@ if (MONGODB_URI) {
 }
 
 // ==========================================
-// 📦 資料庫結構定義池 (Schemas)
+// 📦 Schema 定義 (新增 PIN 碼欄位)
 // ==========================================
-
-// 1. 勇者雲端永久進度存檔 (包含等級、經驗、6大屬性點數、倉庫、裝備及星級)
 const ActiveProgressSchema = new mongoose.Schema({
     name: { type: String, required: true, unique: true },
+    pin: { type: String, required: true }, // 🔒 6 位數身份驗證 PIN 碼
     playerObj: { type: Object, required: true }, 
     updatedAt: { type: Date, default: Date.now }
 });
 const ActiveProgress = mongoose.model('ActiveProgress', ActiveProgressSchema);
 
-// 2. 歷史英靈殿與冒險記錄 (僅作為數據展示，絕不刪除角色主檔案)
 const TombstoneSchema = new mongoose.Schema({
     name: String, 
     floor: Number, 
@@ -51,33 +48,85 @@ const TombstoneSchema = new mongoose.Schema({
 });
 const Tombstone = mongoose.model('Tombstone', TombstoneSchema);
 
-
 // ==========================================
-// 核心中央 API 路由控制器
+// 核心路由控制器
 // ==========================================
 
-// 1. 喚醒伺服器 / 健康檢查端點 (專供前端 Loading 畫面 Ping 喚醒 Render 冷啟動)
+// 1. 健康檢查 / 喚醒端點
 app.get('/', (req, res) => { 
     res.send("⚔️ 命運深淵雲端儲存點伺服器運作中！"); 
 });
 
-// 2. 📥 【API 1】雲端存檔同步 (全面相容前端 activeChar / player / playerObj 格式)
+// 2. 🔑 【API 0】身份驗證 / 登入檢測端點
+app.post('/api/auth/login', async (req, res) => {
+    const { name, pin } = req.body;
+
+    if (!name || !pin || pin.length !== 6) {
+        return res.status(400).json({ success: false, message: "❌ 請輸入有效的勇者名稱與 6 位數 PIN 碼！" });
+    }
+
+    try {
+        const existingUser = await ActiveProgress.findOne({ name: name });
+
+        if (!existingUser) {
+            // 全新角色
+            return res.json({
+                success: true,
+                isNewUser: true,
+                message: "✨ 尚未發現此血脈，將為你創建新角色！"
+            });
+        }
+
+        // 舊帳號驗證 PIN 碼 (相容以前舊版沒有 PIN 的資料)
+        if (existingUser.pin && existingUser.pin !== pin) {
+            return res.status(401).json({
+                success: false,
+                message: "🔐 PIN 碼驗證失敗！此血脈已被其他勇者封印。"
+            });
+        }
+
+        // 若舊帳號無 PIN，則於本次自動綁定
+        if (!existingUser.pin) {
+            existingUser.pin = pin;
+            await existingUser.save();
+        }
+
+        return res.json({
+            success: true,
+            isNewUser: false,
+            activeChar: existingUser.playerObj,
+            message: `🔑 解鎖成功！歡迎回來，${name}。`
+        });
+
+    } catch (error) {
+        console.error("❌ 身份驗證失敗:", error);
+        res.status(500).json({ success: false, message: "❌ 伺服器驗證異常", error: error.message });
+    }
+});
+
+// 3. 💾 【API 1】雲端存檔同步 (包含 PIN 碼防護)
 const savePlayerHandler = async (req, res) => {
-    const name = req.body.name;
-    // 相容前端 state.js 發送的 activeChar 或傳統 playerObj 結構
+    const { name, pin } = req.body;
     const playerData = req.body.activeChar || req.body.player || req.body.playerObj;
 
-    if (!name || !playerData) {
+    if (!name || !pin || !playerData) {
         return res.status(400).json({ 
             success: false, 
-            message: "❌ 缺少必要參數：必須包含 name 與 playerData/activeChar" 
+            message: "❌ 缺少必要參數：必須包含 name, pin 與 activeChar" 
         });
     }
 
     try {
+        const existingUser = await ActiveProgress.findOne({ name: name });
+
+        // 防止他人寫入存檔
+        if (existingUser && existingUser.pin && existingUser.pin !== pin) {
+            return res.status(403).json({ success: false, message: "⛔ 權限不足：PIN 碼不符，拒絕覆蓋存檔！" });
+        }
+
         const savedChar = await ActiveProgress.findOneAndUpdate(
             { name: name },
-            { playerObj: playerData, updatedAt: Date.now() },
+            { pin: pin, playerObj: playerData, updatedAt: Date.now() },
             { new: true, upsert: true }
         );
         
@@ -92,30 +141,25 @@ const savePlayerHandler = async (req, res) => {
     }
 };
 
-// 雙路徑掛載，同時相容 /api/active/save 及舊版 /api/save 呼叫
 app.post('/api/active/save', savePlayerHandler);
 app.post('/api/save', savePlayerHandler);
 
-
-// 3. 📤 【API 2】讀取勇者雲端檔案 (支援前端 initOrLoadPlayer / loadGameData)
+// 4. 📤 【API 2】傳統讀取端點
 app.get('/api/load/:name', async (req, res) => {
     const playerName = req.params.name;
     try {
         const activeData = await ActiveProgress.findOne({ name: playerName });
-        
         res.json({
             success: true,
             name: playerName,
             activeChar: activeData ? activeData.playerObj : null 
         });
     } catch (error) {
-        console.error("❌ 讀取存檔失敗:", error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
 
-
-// 4. 🪦 【API 3】紀錄討伐失敗或深淵紀錄 (只寫入英靈殿，絕不刪除角色檔)
+// 5. 🪦 【API 3】紀錄英靈殿
 app.post('/api/record-death', async (req, res) => {
     const { name, floor, lv, cause, lastWords } = req.body;
     try {
@@ -124,18 +168,16 @@ app.post('/api/record-death', async (req, res) => {
             floor: floor || 1,
             lv: lv || 1,
             cause: cause || "深淵魔物",
-            lastWords: lastWords || "（雖然撤退了，但裝備與能力依然留在身上...）"
+            lastWords: lastWords || "（撤退返回地表...）"
         });
         await newTomb.save();
-
         res.json({ success: true, message: "🪦 冒險紀錄已寫入英靈殿。" });
     } catch (error) { 
         res.status(500).json({ success: false, error: error.message }); 
     }
 });
 
-
-// 5. 📤 【API 4】抓取最新全球英靈榜
+// 6. 📤 【API 4】英靈榜
 app.get('/api/global-tombstones', async (req, res) => {
     try {
         const list = await Tombstone.find().sort({ date: -1 }).limit(10);
@@ -145,6 +187,4 @@ app.get('/api/global-tombstones', async (req, res) => {
     }
 });
 
-
-// 📡 開啟中央監聽閘門
 app.listen(PORT, () => console.log(`🚀 命運深淵伺服器已在 Port ${PORT} 部署就緒！`));
