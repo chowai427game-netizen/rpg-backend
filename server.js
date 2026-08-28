@@ -67,18 +67,24 @@ let squareChatHistory = [];
 // 📡 線上勇者計數器
 let onlineCount = 0;
 
-io.on("connection", (socket) => {
-    onlineCount++;
-    io.emit("update_online_count", onlineCount); // 廣播最新人數給所有人
+// 📡 線上勇者計數器
+let onlineCount = 0;
 
+io.on("connection", (socket) => {
+    // 增加連線人數並廣播給所有人
+    onlineCount++;
+    io.emit("update_online_count", onlineCount);
+
+    // 1. 新玩家進入廣場連線時，直接發送記憶體內的最新 20 條紀錄
     socket.emit("init_chat_history", squareChatHistory);
 
+    // 2. 收到玩家發送的訊息
     socket.on("send_square_chat", (data) => {
         if (!data || !data.msg || data.msg.trim() === "") return;
 
         const chatData = {
             name: data.name || "無名勇者",
-            msg: data.msg.substring(0, 50)
+            msg: data.msg.substring(0, 50) // 限制單條文字長度最大 50 字
         };
 
         squareChatHistory.push(chatData);
@@ -90,7 +96,7 @@ io.on("connection", (socket) => {
         io.emit("receive_square_chat", chatData);
     });
 
-    // 🛑 當玩家關閉網頁或斷開連線時
+    // 3. 玩家斷開連線時扣除人數
     socket.on("disconnect", () => {
         onlineCount = Math.max(0, onlineCount - 1);
         io.emit("update_online_count", onlineCount);
