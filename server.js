@@ -1,8 +1,11 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const http = require('http'); // 💡 新增：Node.js 原生 HTTP 模組
+const { Server } = require('socket.io'); // 💡 新增：Socket.io 伺服器
 
 const app = express();
+const server = http.createServer(app); // 💡 將 Express 包裹進 HTTP 伺服器
 
 // ==========================================
 // 🌐 CORS 跨網域配置
@@ -49,6 +52,44 @@ const TombstoneSchema = new mongoose.Schema({
 const Tombstone = mongoose.model('Tombstone', TombstoneSchema);
 
 // ==========================================
+// 💬 廣場即時聊天系統 (RAM 暫存，不存 MongoDB，極致省流量)
+// ==========================================
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
+
+// 🛑 伺服器記憶體內存（只留最新 20 條廣播，Render 休眠會自動清空，不佔資料庫容量）
+let squareChatHistory = [];
+
+io.on("connection", (socket) => {
+    // 1. 新玩家進入廣場連線時，直接發送記憶體內的最新 20 條紀錄
+    socket.emit("init_chat_history", squareChatHistory);
+
+    // 2. 收到玩家發送的訊息
+    socket.on("send_square_chat", (data) => {
+        if (!data || !data.msg || data.msg.trim() === "") return;
+
+        const chatData = {
+            name: data.name || "無名勇者",
+            msg: data.msg.substring(0, 50) // 限制單條文字長度最大 50 字
+        };
+
+        squareChatHistory.push(chatData);
+
+        // 超過 20 條自動丟棄最舊的
+        if (squareChatHistory.length > 20) {
+            squareChatHistory.shift();
+        }
+
+        // 廣播給線上所有勇者
+        io.emit("receive_square_chat", chatData);
+    });
+});
+
+// ==========================================
 // 核心路由控制器
 // ==========================================
 
@@ -69,7 +110,6 @@ app.post('/api/auth/login', async (req, res) => {
         const existingUser = await ActiveProgress.findOne({ name: name });
 
         if (!existingUser) {
-            // 全新角色
             return res.json({
                 success: true,
                 isNewUser: true,
@@ -77,7 +117,6 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-        // 舊帳號驗證 PIN 碼 (相容以前舊版沒有 PIN 的資料)
         if (existingUser.pin && existingUser.pin !== pin) {
             return res.status(401).json({
                 success: false,
@@ -85,7 +124,6 @@ app.post('/api/auth/login', async (req, res) => {
             });
         }
 
-        // 若舊帳號無 PIN，則於本次自動綁定
         if (!existingUser.pin) {
             existingUser.pin = pin;
             await existingUser.save();
@@ -119,7 +157,6 @@ const savePlayerHandler = async (req, res) => {
     try {
         const existingUser = await ActiveProgress.findOne({ name: name });
 
-        // 防止他人寫入存檔
         if (existingUser && existingUser.pin && existingUser.pin !== pin) {
             return res.status(403).json({ success: false, message: "⛔ 權限不足：PIN 碼不符，拒絕覆蓋存檔！" });
         }
@@ -187,4 +224,5 @@ app.get('/api/global-tombstones', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 命運深淵伺服器已在 Port ${PORT} 部署就緒！`));
+// 💡 注意：這裡改用 server.listen 啟動 HTTP + Socket.io 伺服器
+server.listen(PORT, () => console.log(`🚀 命運深淵伺服器已在 Port ${PORT} 部署就緒！`));
